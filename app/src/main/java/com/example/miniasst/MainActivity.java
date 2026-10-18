@@ -64,6 +64,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean busy = false;
 
     private OfflineBrain brain;
+    private MemoryStore store;
+    private String lastWeb = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,6 +86,18 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public double usdToBdt() {
                 return getRate(PREF_USD);
+            }
+        });
+
+        store = new MemoryStore(new MemoryStore.Storage() {
+            @Override
+            public String get(String key) {
+                return prefs().getString("mem_" + key, "");
+            }
+
+            @Override
+            public void put(String key, String value) {
+                prefs().edit().putString("mem_" + key, value).apply();
             }
         });
 
@@ -251,7 +265,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void showWelcome() {
         appendChat("Donald: হ্যালো! আমি Donald। ইন্টারনেট ছাড়াই আমি হিসাব, মুদ্রা রূপান্তর, CBM, "
-                + "আমদানি-রপ্তানির নিয়ম ও ব্যবসার সূত্র জানি। 'help' লিখে দেখুন আমি কী কী পারি।");
+                + "আমদানি-রপ্তানির নিয়ম ও ব্যবসার সূত্র জানি। 'help' লিখে দেখুন আমি কী কী পারি। "
+                + "নতুন কিছু শেখাতে /commands লিখুন।");
         if (getRate(PREF_RMB) <= 0 && getRate(PREF_USD) <= 0) {
             appendChat("Donald: মুদ্রা হিসাবের জন্য ⋮ মেনু → 'রেট সেট করুন' এ আজকের রেট বসিয়ে নিন।");
         }
@@ -286,19 +301,125 @@ public class MainActivity extends AppCompatActivity {
         sendButton.setText(value ? "অপেক্ষা…" : "পাঠান");
     }
 
+    private static final String COMMANDS_HELP =
+            "Donald এর কমান্ড:\n"
+            + "/add.memory <তথ্য> — নতুন তথ্য আমার স্মৃতিতে যোগ (ফাঁকা দিলে শেষ ওয়েব উত্তরটা সেভ হবে)\n"
+            + "/memory — স্মৃতির তালিকা\n"
+            + "/memory.delete <নম্বর> — একটা স্মৃতি মোছা\n"
+            + "/memory.clear — সব স্মৃতি মোছা\n"
+            + "/skill.add নাম | ট্রিগার | উত্তর — নতুন স্কিল শেখানো\n"
+            + "/skill.list — স্কিলের তালিকা\n"
+            + "/skill.delete <নম্বর বা নাম> — স্কিল মোছা\n"
+            + "/search <প্রশ্ন> — ইন্টারনেট (উইকিপিডিয়া) থেকে তথ্য খোঁজা, ক্রেডিট লাগে না\n"
+            + "/commands — এই তালিকা";
+
+    /** '/' দিয়ে শুরু হলে কমান্ড হিসেবে চালায়; কমান্ড হলে true। */
+    private boolean handleCommand(String query) {
+        if (!query.startsWith("/")) return false;
+        String lower = query.toLowerCase(Locale.ROOT);
+        String cmd = lower;
+        String arg = "";
+        int sp = query.indexOf(' ');
+        if (sp > 0) {
+            cmd = lower.substring(0, sp);
+            arg = query.substring(sp + 1).trim();
+        }
+        if (cmd.equals("/add.memory") || cmd.equals("/addmemory") || cmd.equals("/memory.add")) {
+            if (arg.isEmpty() && lastWeb != null) arg = lastWeb;
+            String err = store.addMemory(arg);
+            appendChat("Donald: " + (err == null ? "মনে রাখলাম। (মোট " + store.memoryCount() + "টি স্মৃতি)" : err));
+        } else if (cmd.equals("/memory") || cmd.equals("/memories")) {
+            appendChat("Donald: " + store.listMemories());
+        } else if (cmd.equals("/memory.delete") || cmd.equals("/forget")) {
+            appendChat("Donald: " + store.deleteMemory(arg));
+        } else if (cmd.equals("/memory.clear")) {
+            appendChat("Donald: " + store.clearMemories());
+        } else if (cmd.equals("/skill.add") || cmd.equals("/skill")) {
+            String err = arg.isEmpty() ? MemoryStore.skillUsage() : store.addSkill(arg);
+            appendChat("Donald: " + (err == null ? "স্কিল শিখে নিলাম। /skill.list এ দেখুন।" : err));
+        } else if (cmd.equals("/skill.list") || cmd.equals("/skills")) {
+            appendChat("Donald: " + store.listSkills());
+        } else if (cmd.equals("/skill.delete")) {
+            appendChat("Donald: " + store.deleteSkill(arg));
+        } else if (cmd.equals("/search") || cmd.equals("/web")) {
+            if (arg.isEmpty()) {
+                appendChat("Donald: কী খুঁজব? যেমন: /search বাংলাদেশের রাজধানী");
+            } else {
+                webSearch(arg, null);
+            }
+        } else if (cmd.equals("/commands") || cmd.equals("/help")) {
+            appendChat("Donald: " + COMMANDS_HELP);
+        } else {
+            appendChat("Donald: এই কমান্ড চিনি না। /commands লিখে দেখুন।");
+        }
+        return true;
+    }
+
+    private static String formatWeb(WebSearch.Result r) {
+        return r.title + "\n" + r.text + "\n\nসূত্র: " + r.url + " (উইকিপিডিয়া)";
+    }
+
+    /** ব্যাকগ্রাউন্ডে ওয়েবে খোঁজে। note থাকলে উত্তরের আগে বসে। */
+    private void webSearch(final String query, final String note) {
+        setBusy(true);
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                String out;
+                String remember = null;
+                try {
+                    WebSearch.Result r = WebSearch.search(query);
+                    if (r == null) {
+                        out = "ওয়েবে এই বিষয়ে কিছু পাইনি। অন্যভাবে লিখে /search দিয়ে চেষ্টা করুন।";
+                    } else {
+                        out = formatWeb(r);
+                        remember = r.title + ": " + r.text;
+                        out += "\n\n(মনে রাখতে চাইলে শুধু /add.memory লিখুন)";
+                    }
+                } catch (Exception e) {
+                    out = "ইন্টারনেট থেকে তথ্য আনতে পারিনি। সংযোগ দেখে আবার চেষ্টা করুন।";
+                }
+                final String fOut = (note == null ? "" : note + "\n\n") + out;
+                final String fRemember = remember;
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (fRemember != null) lastWeb = fRemember;
+                        appendChat("Donald: " + fOut);
+                        setBusy(false);
+                    }
+                });
+            }
+        });
+    }
+
     private void processQuery(final String query) {
-        // ১) আগে অফলাইনে চেষ্টা
+        // ০) কমান্ড
+        if (handleCommand(query)) {
+            return;
+        }
+
+        // ১) শেখানো স্কিল, তারপর অফলাইন জ্ঞান, তারপর নিজের স্মৃতি
+        String skill = store.runSkill(query);
+        if (skill != null) {
+            appendChat("Donald: " + skill);
+            return;
+        }
         String offline = brain.answer(query);
         if (offline != null) {
             appendChat("Donald: " + offline);
             return;
         }
+        String recalled = store.recall(query);
+        if (recalled != null) {
+            appendChat("Donald: " + recalled);
+            return;
+        }
 
-        // ২) অনলাইন বন্ধ বা কী না থাকলে ফলব্যাক
+        // ২) Claude বন্ধ বা কী না থাকলে বিনামূল্যের ওয়েব সার্চ
         final String apiKey = getApiKey();
         if (!isOnlineEnabled() || apiKey.isEmpty()) {
-            appendChat("Donald: এই প্রশ্নের উত্তর আমার অফলাইন জ্ঞানে নেই। 'help' লিখে দেখুন আমি কী কী পারি।"
-                    + (apiKey.isEmpty() ? "\n(আরও প্রশ্নের জন্য ⋮ মেনু থেকে API কী দিতে পারেন।)" : ""));
+            webSearch(query, null);
             return;
         }
 
@@ -339,6 +460,15 @@ public class MainActivity extends AppCompatActivity {
                     answer = "সমস্যা হয়েছে: " + e.getClass().getSimpleName();
                 }
 
+                if (!ok) {
+                    try {
+                        WebSearch.Result r = WebSearch.search(query);
+                        if (r != null) {
+                            answer = answer + "\n\nতবে ওয়েব থেকে যা পেলাম:\n" + formatWeb(r);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
                 final boolean success = ok;
                 final String finalAnswer = answer;
                 mainHandler.post(new Runnable() {
