@@ -3,6 +3,9 @@ package com.example.miniasst;
 import android.annotation.SuppressLint;
 import android.os.Bundle;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.widget.Toast;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -69,6 +72,33 @@ public class WebViewActivity extends AppCompatActivity {
             return;
         }
         web.loadUrl(safe);
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        menu.add(0, 1, 0, "⭐").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+        menu.add(0, 2, 1, "রিফ্রেশ");
+        menu.add(0, 3, 2, "সামনে");
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (web == null) return super.onOptionsItemSelected(item);
+        switch (item.getItemId()) {
+            case 1:
+                String err = Stores.open(this).addBookmark(web.getTitle(), web.getUrl());
+                Toast.makeText(this, err == null ? "বুকমার্ক সেভ হয়েছে" : err, Toast.LENGTH_SHORT).show();
+                return true;
+            case 2:
+                web.reload();
+                return true;
+            case 3:
+                if (web.canGoForward()) web.goForward();
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
     }
 
     @Override

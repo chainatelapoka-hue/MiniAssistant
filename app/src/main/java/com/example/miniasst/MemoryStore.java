@@ -25,6 +25,8 @@ class MemoryStore {
 
     private static final String K_MEM = "memories";
     private static final String K_SKILL = "skills";
+    private static final String K_BOOK = "bookmarks";
+    static final int MAX_BOOKMARKS = 300;
     static final int MAX_MEMORIES = 500;
     static final int MAX_SKILLS = 100;
     static final int MAX_LEN = 2000;
@@ -32,6 +34,7 @@ class MemoryStore {
     private final Storage storage;
     private final List<String> memories = new ArrayList<>();
     private final List<Skill> skills = new ArrayList<>();
+    private final List<String[]> bookmarks = new ArrayList<>(); // {নাম, ঠিকানা}
 
     MemoryStore(Storage storage) {
         this.storage = storage;
@@ -41,6 +44,14 @@ class MemoryStore {
         for (String line : nz(storage.get(K_SKILL)).split("\n")) {
             String[] p = line.split("\t", 3);
             if (p.length == 3) skills.add(new Skill(p[0], p[1], p[2].replace('\u0001', '\n')));
+        }
+        loadBookmarks();
+    }
+
+    private void loadBookmarks() {
+        for (String line : nz(storage.get(K_BOOK)).split("\n")) {
+            String[] p = line.split("\t", 2);
+            if (p.length == 2 && !p[1].trim().isEmpty()) bookmarks.add(new String[]{p[0], p[1]});
         }
     }
 
@@ -63,6 +74,9 @@ class MemoryStore {
             k.append(s.name).append('\t').append(s.trigger).append('\t').append(enc(s.reply)).append('\n');
         }
         storage.put(K_SKILL, k.toString());
+        StringBuilder b = new StringBuilder();
+        for (String[] bm : bookmarks) b.append(bm[0]).append('\t').append(bm[1]).append('\n');
+        storage.put(K_BOOK, b.toString());
     }
 
     // ---------- স্মৃতি ----------
@@ -233,5 +247,54 @@ class MemoryStore {
         if (best == null) return null;
         String rest = query.length() >= pos ? query.substring(Math.min(pos, query.length())).trim() : "";
         return best.reply.replace("{rest}", rest).trim();
+    }
+
+    // ---------- বুকমার্ক ----------
+
+    /** শিরোনাম ফাঁকা হলে ঠিকানাই নাম হবে। null মানে সফল (বা আগেই ছিল), নয়তো কারণ। */
+    String addBookmark(String title, String url) {
+        String u = ActionParser.normalizeUrl(url == null ? "" : url);
+        if (u == null) return "সঠিক সাইটের ঠিকানা দিন। যেমন: /bookmark.add alibaba.com";
+        String t = clean(title == null ? "" : title).replace('\n', ' ');
+        if (t.isEmpty()) t = u;
+        if (t.length() > 80) t = t.substring(0, 80);
+        for (String[] b : bookmarks) {
+            if (b[1].equalsIgnoreCase(u)) return "এটা আগেই বুকমার্কে আছে।";
+        }
+        if (bookmarks.size() >= MAX_BOOKMARKS) return "বুকমার্ক ভরে গেছে (" + MAX_BOOKMARKS + "টি)। কিছু মুছুন।";
+        bookmarks.add(new String[]{t, u});
+        save();
+        return null;
+    }
+
+    String listBookmarks() {
+        if (bookmarks.isEmpty()) return "কোনো বুকমার্ক নেই। সাইট খুলে ওপরের ⭐ চাপুন, অথবা /bookmark.add alibaba.com লিখুন।";
+        StringBuilder sb = new StringBuilder("বুকমার্ক (" + bookmarks.size() + "টি):");
+        for (int i = 0; i < bookmarks.size(); i++) {
+            String[] b = bookmarks.get(i);
+            sb.append('\n').append(i + 1).append(". ").append(b[0]);
+            if (!b[0].equals(b[1])) sb.append(" — ").append(b[1]);
+        }
+        sb.append("\n\nখুলতে: /open <নম্বর>");
+        return sb.toString();
+    }
+
+    String deleteBookmark(String arg) {
+        int n = parseIndex(arg, bookmarks.size());
+        if (n < 0) return "সঠিক নম্বর দিন। যেমন: /bookmark.delete 2 (তালিকা দেখতে /bookmarks)";
+        String[] gone = bookmarks.remove(n);
+        save();
+        return "বুকমার্ক মুছেছি: " + gone[0];
+    }
+
+    /** নম্বর বা নামের অংশ দিয়ে বুকমার্কের ঠিকানা; না পেলে null। */
+    String bookmarkUrl(String arg) {
+        arg = arg.trim();
+        if (arg.isEmpty()) return null;
+        int n = parseIndex(arg, bookmarks.size());
+        if (n >= 0) return bookmarks.get(n)[1];
+        String low = arg.toLowerCase(Locale.ROOT);
+        for (String[] b : bookmarks) if (b[0].toLowerCase(Locale.ROOT).contains(low)) return b[1];
+        return null;
     }
 }

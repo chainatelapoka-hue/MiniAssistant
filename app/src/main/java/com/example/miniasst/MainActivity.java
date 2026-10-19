@@ -5,7 +5,17 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
+import android.speech.RecognizerIntent;
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import java.util.ArrayList;
 import android.provider.AlarmClock;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
@@ -73,6 +83,7 @@ public class MainActivity extends AppCompatActivity {
     private OfflineBrain brain;
     private MemoryStore store;
     private String lastWeb = null;
+    private ActivityResultLauncher<Intent> voiceLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -96,17 +107,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        store = new MemoryStore(new MemoryStore.Storage() {
-            @Override
-            public String get(String key) {
-                return prefs().getString("mem_" + key, "");
-            }
-
-            @Override
-            public void put(String key, String value) {
-                prefs().edit().putString("mem_" + key, value).apply();
-            }
-        });
+        store = Stores.open(this);
 
         showWelcome();
 
@@ -114,6 +115,25 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 sendCurrentInput();
+            }
+        });
+
+        voiceLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
+                new ActivityResultCallback<ActivityResult>() {
+                    @Override
+                    public void onActivityResult(ActivityResult result) {
+                        if (result.getResultCode() != RESULT_OK || result.getData() == null) return;
+                        ArrayList<String> r = result.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                        if (r != null && !r.isEmpty()) {
+                            inputEditText.setText(r.get(0));
+                            inputEditText.setSelection(inputEditText.getText().length());
+                        }
+                    }
+                });
+        findViewById(R.id.micButton).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startVoice();
             }
         });
 
@@ -127,6 +147,27 @@ public class MainActivity extends AppCompatActivity {
                 return false;
             }
         });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // WebView পাতায় নতুন বুকমার্ক সেভ হলে তা পড়ে নেওয়া
+        store = Stores.open(this);
+    }
+
+    private void startVoice() {
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bn-BD");
+        i.putExtra(RecognizerIntent.EXTRA_PROMPT, "বলুন…");
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        try {
+            voiceLauncher.launch(i);
+        } catch (ActivityNotFoundException e) {
+            appendChat("Donald: এই ফোনে ভয়েস টাইপিং পাইনি। গুগল অ্যাপ বা গুগল ভয়েস টাইপিং ইনস্টল/আপডেট করুন, "
+                    + "অথবা কীবোর্ডের মাইক বাটন ব্যবহার করুন।");
+        }
     }
 
     @Override
@@ -325,6 +366,9 @@ public class MainActivity extends AppCompatActivity {
             + "/call <নম্বর> — ডায়ালারে নম্বর বসানো (কল আপনি চাপবেন)\n"
             + "/alarm <সময়> <নাম> — অ্যালার্ম/রিমাইন্ডার (যেমন /alarm ৫:৩০ বিকাল মাল আনা)\n"
             + "/timer <সময়> — টাইমার (যেমন /timer ১০ মিনিট)\n"
+            + "/bookmarks — বুকমার্কের তালিকা; /bookmark.add [নাম |] ঠিকানা; /bookmark.delete <নম্বর>; খুলতে /open <নম্বর>\n"
+            + "/net — নেটওয়ার্ক ও ওয়াইফাইয়ের অবস্থা\n"
+            + "🎤 বাটন — বাংলায় বলে লেখা\n"
             + "/commands — এই তালিকা";
 
     /** '/' দিয়ে শুরু হলে কমান্ড হিসেবে চালায়; কমান্ড হলে true। */
@@ -363,14 +407,31 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (cmd.equals("/open")) {
             String url = ActionParser.normalizeUrl(arg);
+            if (url == null) url = store.bookmarkUrl(arg);
             if (url == null) {
-                appendChat("Donald: সাইটের ঠিকানা দিন। যেমন: /open alibaba.com");
+                appendChat("Donald: সাইটের ঠিকানা বা বুকমার্কের নম্বর দিন। যেমন: /open alibaba.com বা /open 2 (তালিকা: /bookmarks)");
             } else {
                 appendChat("Donald: খুলছি: " + url);
                 Intent i = new Intent(this, WebViewActivity.class);
                 i.putExtra(WebViewActivity.EXTRA_URL, url);
                 startActivity(i);
             }
+        } else if (cmd.equals("/bookmarks") || cmd.equals("/bookmark")) {
+            appendChat("Donald: " + store.listBookmarks());
+        } else if (cmd.equals("/bookmark.add")) {
+            // ফরম্যাট: [নাম |] ঠিকানা
+            String title = "", link = arg;
+            int bar = arg.indexOf('|');
+            if (bar >= 0) {
+                title = arg.substring(0, bar).trim();
+                link = arg.substring(bar + 1).trim();
+            }
+            String err = store.addBookmark(title, link);
+            appendChat("Donald: " + (err == null ? "বুকমার্ক সেভ হয়েছে। /bookmarks এ দেখুন।" : err));
+        } else if (cmd.equals("/bookmark.delete")) {
+            appendChat("Donald: " + store.deleteBookmark(arg));
+        } else if (cmd.equals("/net")) {
+            netCheck();
         } else if (cmd.equals("/app")) {
             openApp(arg);
         } else if (cmd.equals("/whatsapp") || cmd.equals("/wa")) {
@@ -486,6 +547,73 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         appendChat("Donald: ফোনে হোয়াটসঅ্যাপ পাইনি।");
+    }
+
+    /** নেটওয়ার্ক ও ওয়াইফাইয়ের অবস্থা। SSID/লোকেশন নেওয়া হয় না। */
+    private void netCheck() {
+        StringBuilder sb = new StringBuilder("নেটওয়ার্কের অবস্থা:");
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo ni = cm == null ? null : cm.getActiveNetworkInfo();
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            boolean wifiOn = wm != null && wm.isWifiEnabled();
+            sb.append("\n- ওয়াইফাই: ").append(wifiOn ? "চালু" : "বন্ধ");
+            if (ni == null || !ni.isConnected()) {
+                sb.append("\n- সংযোগ: কোনো নেটওয়ার্কে যুক্ত নয়");
+            } else if (ni.getType() == ConnectivityManager.TYPE_WIFI) {
+                sb.append("\n- সংযোগ: ওয়াইফাই");
+                WifiInfo wi = wm == null ? null : wm.getConnectionInfo();
+                if (wi != null && wi.getRssi() > -127) {
+                    sb.append("\n- ওয়াইফাই সিগন্যাল: ").append(ActionParser.signalText(wi.getRssi()))
+                            .append(" (").append(wi.getRssi()).append(" dBm)");
+                    if (wi.getLinkSpeed() > 0) sb.append("\n- লিংক স্পিড: ").append(wi.getLinkSpeed()).append(" Mbps");
+                }
+            } else if (ni.getType() == ConnectivityManager.TYPE_MOBILE) {
+                sb.append("\n- সংযোগ: মোবাইল ডেটা (").append(ActionParser.generation(ni.getSubtypeName())).append(")");
+                if (ni.isRoaming()) sb.append("\n- রোমিং চলছে, ডেটা খরচ বেশি হতে পারে");
+            } else {
+                sb.append("\n- সংযোগ: ").append(ni.getTypeName());
+            }
+        } catch (SecurityException e) {
+            sb.append("\n(এই ফোনে নেটওয়ার্কের অবস্থা দেখার অনুমতি পাইনি)");
+        }
+        final String head = sb.toString();
+        setBusy(true);
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                String tail;
+                long t0 = System.currentTimeMillis();
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL("https://www.gstatic.com/generate_204").openConnection();
+                    c.setConnectTimeout(6000);
+                    c.setReadTimeout(6000);
+                    int code = c.getResponseCode();
+                    long ms = System.currentTimeMillis() - t0;
+                    tail = code == 204 || code == 200
+                            ? "\n- ইন্টারনেট: চলছে (সাড়া " + OfflineBrain.toBn(String.valueOf(ms)) + " মিলিসেকেন্ড)"
+                            : "\n- ইন্টারনেট: সংযোগ আছে কিন্তু পরীক্ষায় অস্বাভাবিক উত্তর (কোড " + code + "), "
+                                + "ওয়াইফাইয়ের লগইন পাতা বাকি থাকতে পারে";
+                } catch (java.net.UnknownHostException e) {
+                    tail = "\n- ইন্টারনেট: নেই (সাইটের নাম খুঁজে পাচ্ছে না)";
+                } catch (java.net.SocketTimeoutException e) {
+                    tail = "\n- ইন্টারনেট: খুব ধীর বা সাড়া আসছে না";
+                } catch (Exception e) {
+                    tail = "\n- ইন্টারনেট: পৌঁছানো যাচ্ছে না";
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+                final String out = head + tail;
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        appendChat("Donald: " + out);
+                        setBusy(false);
+                    }
+                });
+            }
+        });
     }
 
     private static String formatWeb(WebSearch.Result r) {

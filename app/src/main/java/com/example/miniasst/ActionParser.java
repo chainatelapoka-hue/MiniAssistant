@@ -96,4 +96,24 @@ final class ActionParser {
         for (String[] p : map) if (n.equals(p[0])) return p[1];
         return n;
     }
+
+    /** ওয়াইফাই সিগন্যাল (dBm) → বাংলা বর্ণনা। */
+    static String signalText(int rssi) {
+        if (rssi >= -55) return "খুব ভালো";
+        if (rssi >= -67) return "ভালো";
+        if (rssi >= -78) return "মাঝারি";
+        return "দুর্বল";
+    }
+
+    /** মোবাইল নেটওয়ার্কের ধরন-নাম → 2G/3G/4G/5G। */
+    static String generation(String subtype) {
+        String s = subtype == null ? "" : subtype.toUpperCase(Locale.ROOT);
+        if (s.contains("NR")) return "5G";
+        if (s.contains("LTE")) return "4G";
+        if (s.contains("HSPA") || s.contains("HSDPA") || s.contains("HSUPA") || s.contains("UMTS")
+                || s.contains("EVDO") || s.contains("TD-SCDMA") || s.contains("EHRPD")) return "3G";
+        if (s.contains("EDGE") || s.contains("GPRS") || s.contains("GSM") || s.contains("CDMA")
+                || s.contains("1XRTT") || s.contains("IDEN")) return "2G";
+        return subtype == null || subtype.isEmpty() ? "অজানা" : subtype;
+    }
 }
