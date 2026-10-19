@@ -1,6 +1,12 @@
 package com.example.miniasst;
 
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.net.Uri;
+import android.provider.AlarmClock;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.os.Bundle;
@@ -32,6 +38,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.List;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -311,6 +318,13 @@ public class MainActivity extends AppCompatActivity {
             + "/skill.list — স্কিলের তালিকা\n"
             + "/skill.delete <নম্বর বা নাম> — স্কিল মোছা\n"
             + "/search <প্রশ্ন> — ইন্টারনেট (উইকিপিডিয়া) থেকে তথ্য খোঁজা, ক্রেডিট লাগে না\n"
+            + "/open <সাইট> — Donald এর ভেতরেই সাইট খোলা (যেমন /open alibaba.com)\n"
+            + "/app <নাম> — ফোনের অ্যাপ খোলা (যেমন /app whatsapp)\n"
+            + "/whatsapp <নম্বর> <বার্তা> — হোয়াটসঅ্যাপে বার্তা তৈরি, আপনি Send চাপবেন\n"
+            + "/sms <নম্বর> <বার্তা> — SMS তৈরি\n"
+            + "/call <নম্বর> — ডায়ালারে নম্বর বসানো (কল আপনি চাপবেন)\n"
+            + "/alarm <সময়> <নাম> — অ্যালার্ম/রিমাইন্ডার (যেমন /alarm ৫:৩০ বিকাল মাল আনা)\n"
+            + "/timer <সময়> — টাইমার (যেমন /timer ১০ মিনিট)\n"
             + "/commands — এই তালিকা";
 
     /** '/' দিয়ে শুরু হলে কমান্ড হিসেবে চালায়; কমান্ড হলে true। */
@@ -347,12 +361,131 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 webSearch(arg, null);
             }
+        } else if (cmd.equals("/open")) {
+            String url = ActionParser.normalizeUrl(arg);
+            if (url == null) {
+                appendChat("Donald: সাইটের ঠিকানা দিন। যেমন: /open alibaba.com");
+            } else {
+                appendChat("Donald: খুলছি: " + url);
+                Intent i = new Intent(this, WebViewActivity.class);
+                i.putExtra(WebViewActivity.EXTRA_URL, url);
+                startActivity(i);
+            }
+        } else if (cmd.equals("/app")) {
+            openApp(arg);
+        } else if (cmd.equals("/whatsapp") || cmd.equals("/wa")) {
+            sendWhatsApp(arg);
+        } else if (cmd.equals("/sms")) {
+            String[] nt = ActionParser.numberAndText(arg);
+            if (nt[0].isEmpty()) {
+                appendChat("Donald: নম্বর দিন। যেমন: /sms 01711223344 কালকে মাল আসবে");
+            } else {
+                Intent i = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + nt[0]));
+                i.putExtra("sms_body", nt[1]);
+                launch(i, "SMS অ্যাপ খুলেছি। Send আপনি চাপবেন।");
+            }
+        } else if (cmd.equals("/call")) {
+            String[] nt = ActionParser.numberAndText(arg);
+            if (nt[0].isEmpty()) {
+                appendChat("Donald: নম্বর দিন। যেমন: /call 01711223344");
+            } else {
+                launch(new Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", nt[0], null)),
+                        "ডায়ালারে নম্বর বসিয়েছি। কল আপনি চাপবেন।");
+            }
+        } else if (cmd.equals("/alarm") || cmd.equals("/remind")) {
+            String[] label = new String[1];
+            int[] t = ActionParser.time(arg, label);
+            if (t == null) {
+                appendChat("Donald: সময় দিন। যেমন: /alarm ৫:৩০ বিকাল মাল আনা");
+            } else {
+                Intent i = new Intent(AlarmClock.ACTION_SET_ALARM)
+                        .putExtra(AlarmClock.EXTRA_HOUR, t[0])
+                        .putExtra(AlarmClock.EXTRA_MINUTES, t[1])
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, label[0].isEmpty() ? "Donald" : label[0]);
+                launch(i, "অ্যালার্ম তৈরি করছি: " + OfflineBrain.toBn(String.valueOf(t[0])) + ":"
+                        + (t[1] < 10 ? "০" : "") + OfflineBrain.toBn(String.valueOf(t[1])) + " (২৪ ঘণ্টা)। ঘড়ি অ্যাপে নিশ্চিত করুন।");
+            }
+        } else if (cmd.equals("/timer")) {
+            int secs = ActionParser.timerSeconds(arg);
+            if (secs < 0) {
+                appendChat("Donald: সময় দিন। যেমন: /timer ১০ মিনিট বা /timer ২ ঘণ্টা");
+            } else {
+                Intent i = new Intent(AlarmClock.ACTION_SET_TIMER)
+                        .putExtra(AlarmClock.EXTRA_LENGTH, secs)
+                        .putExtra(AlarmClock.EXTRA_MESSAGE, "Donald");
+                launch(i, "টাইমার সেট করছি। ঘড়ি অ্যাপে নিশ্চিত করুন।");
+            }
         } else if (cmd.equals("/commands") || cmd.equals("/help")) {
             appendChat("Donald: " + COMMANDS_HELP);
         } else {
             appendChat("Donald: এই কমান্ড চিনি না। /commands লিখে দেখুন।");
         }
         return true;
+    }
+
+    private void launch(Intent i, String okMsg) {
+        try {
+            startActivity(i);
+            appendChat("Donald: " + okMsg);
+        } catch (ActivityNotFoundException e) {
+            appendChat("Donald: এই কাজের জন্য ফোনে উপযুক্ত অ্যাপ পেলাম না।");
+        } catch (SecurityException e) {
+            appendChat("Donald: ফোন এই কাজের অনুমতি দেয়নি।");
+        }
+    }
+
+    private void openApp(String name) {
+        if (name.isEmpty()) {
+            appendChat("Donald: অ্যাপের নাম দিন। যেমন: /app whatsapp");
+            return;
+        }
+        String want = ActionParser.appAlias(name);
+        PackageManager pm = getPackageManager();
+        Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> apps = pm.queryIntentActivities(main, 0);
+        ResolveInfo exact = null, partial = null;
+        for (ResolveInfo ri : apps) {
+            String label = String.valueOf(ri.loadLabel(pm)).toLowerCase(Locale.ROOT);
+            if (label.equals(want)) { exact = ri; break; }
+            if (partial == null && label.contains(want)) partial = ri;
+        }
+        ResolveInfo pick = exact != null ? exact : partial;
+        if (pick == null) {
+            appendChat("Donald: \"" + name + "\" নামে অ্যাপ পাইনি। নামটা ইংরেজিতে লিখে দেখুন।");
+            return;
+        }
+        Intent li = pm.getLaunchIntentForPackage(pick.activityInfo.packageName);
+        if (li == null) {
+            appendChat("Donald: অ্যাপটা খুলতে পারিনি।");
+            return;
+        }
+        launch(li, "খুলছি: " + pick.loadLabel(pm));
+    }
+
+    private void sendWhatsApp(String arg) {
+        String[] nt = ActionParser.numberAndText(arg);
+        if (nt[1].isEmpty() && nt[0].isEmpty()) {
+            appendChat("Donald: যেমন: /whatsapp 01711223344 কালকে মাল আসবে\n(নম্বর ছাড়া লিখলে কাকে পাঠাবেন সেটা হোয়াটসঅ্যাপে বেছে নেবেন)");
+            return;
+        }
+        String[] pkgs = {"com.whatsapp", "com.whatsapp.w4b"};
+        for (String pkg : pkgs) {
+            Intent i;
+            if (nt[0].isEmpty()) {
+                i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, nt[1]);
+            } else {
+                i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + ActionParser.waNumber(nt[0])
+                        + "?text=" + Uri.encode(nt[1])));
+            }
+            i.setPackage(pkg);
+            try {
+                startActivity(i);
+                appendChat("Donald: হোয়াটসঅ্যাপে বার্তা তৈরি করেছি। Send আপনি চাপবেন।");
+                return;
+            } catch (ActivityNotFoundException ignored) {
+            }
+        }
+        appendChat("Donald: ফোনে হোয়াটসঅ্যাপ পাইনি।");
     }
 
     private static String formatWeb(WebSearch.Result r) {
